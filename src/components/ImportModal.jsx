@@ -54,24 +54,100 @@ function isSimilarEnough(headerNorm, hintNorm) {
   return false
 }
 
-function autoMap(headers) {
-  const mapping = {}
-  for (const [fieldKey, hints] of Object.entries(AUTO_MAP_HINTS)) {
-    // First try exact match
-    let match = headers.find(h => hints.includes(h.toLowerCase().trim()))
-    // If no exact match, try fuzzy match
-    if (!match) {
-      for (const header of headers) {
-        const headerNorm = header.toLowerCase().trim()
-        if (hints.some(hint => isSimilarEnough(headerNorm, hint))) {
-          match = header
-          break
-        }
+// ─── Smart auto-mapping with scoring & collision prevention ──────────────────
+function calculateSimilarityScore(header, hints) {
+  const headerNorm = header.toLowerCase().trim()
+  let bestScore = 0
+
+  for (const hint of hints) {
+    let score = 0
+    // Exact match = 100
+    if (headerNorm === hint) return 100
+    // Substring match = 80
+    if (headerNorm.includes(hint) || hint.includes(headerNorm)) score = 80
+    // Fuzzy match with Levenshtein = 60-80 based on distance
+    else {
+      const distance = levenshteinDistance(headerNorm, hint)
+      if (distance <= 1) score = 80
+      else if (distance <= 2) score = 70
+      else if (distance <= 3) score = 60
+    }
+    bestScore = Math.max(bestScore, score)
+  }
+  return bestScore
+}
+
+function autoMapSmart(headers, rawData = []) {
+  // Create scoring matrix: headers × fields
+  const scores = {}
+  for (const header of headers) {
+    scores[header] = {}
+    for (const [fieldKey, hints] of Object.entries(AUTO_MAP_HINTS)) {
+      scores[header][fieldKey] = calculateSimilarityScore(header, hints)
+    }
+  }
+
+  // Data-type validation: check if values match field types
+  const sampleRows = rawData.slice(0, 10) // Check first 10 rows
+  if (sampleRows.length > 0) {
+    for (const header of headers) {
+      const values = sampleRows.map(r => String(r[header] || '').trim()).filter(v => v)
+      if (values.length === 0) continue
+
+      // Detect field type from data
+      const isNumeric = values.every(v => !isNaN(Number(v)))
+      const isEmail = values.every(v => v.includes('@'))
+      const isURL = values.every(v => v.includes('http') || v.includes('linkedin'))
+
+      // Boost score for correct type matches
+      if (isNumeric) {
+        scores[header]['headcount'] = (scores[header]['headcount'] || 0) + 30
+      }
+      if (isEmail) {
+        scores[header]['email'] = (scores[header]['email'] || 0) + 30
+      }
+      if (isURL) {
+        scores[header]['company_linkedin'] = (scores[header]['company_linkedin'] || 0) + 20
+        scores[header]['personal_linkedin'] = (scores[header]['personal_linkedin'] || 0) + 20
       }
     }
-    if (match) mapping[fieldKey] = match
   }
+
+  // Greedy matching: assign each field to best header (no collisions)
+  const mapping = {}
+  const usedHeaders = new Set()
+
+  // Sort fields by average score (high confidence first)
+  const fieldScores = Object.keys(AUTO_MAP_HINTS).map(fieldKey => ({
+    fieldKey,
+    maxScore: Math.max(...headers.map(h => scores[h][fieldKey] || 0)),
+  })).sort((a, b) => b.maxScore - a.maxScore)
+
+  for (const { fieldKey } of fieldScores) {
+    let bestHeader = null
+    let bestScore = 0
+
+    for (const header of headers) {
+      if (usedHeaders.has(header)) continue // Already assigned
+      const score = scores[header][fieldKey] || 0
+      if (score > bestScore) {
+        bestScore = score
+        bestHeader = header
+      }
+    }
+
+    // Only assign if score > 50 (reasonable confidence)
+    if (bestHeader && bestScore > 50) {
+      mapping[fieldKey] = bestHeader
+      usedHeaders.add(bestHeader)
+    }
+  }
+
   return mapping
+}
+
+function autoMap(headers, rawData = []) {
+  return autoMapSmart(headers, rawData)
 }
 
 // ─── File parsing ──────────────────────────────────────────────────────────
@@ -199,6 +275,12 @@ function ColumnMapper({ headers, rawData, mapping, onMappingChange, allLeads, on
   // Check if any rows have validation errors
   const hasValidationErrors = validationErrors.length > 0
 
+  // Check if mapping is confident (most critical fields mapped)
+  const criticalFields = ['first_name', 'last_name', 'email', 'company_name']
+  const mappingConfidence = criticalFields.filter(f => mapping[f]).length / criticalFields.length
+  const isConfidentMapping = mappingConfidence >= 0.75 // 75% of critical fields mapped
+  const [showManualMapping, setShowManualMapping] = useState(!isConfidentMapping)
+
   async function doImport() {
     if (hasValidationErrors) {
       setImportError('Please fix the data validation errors above before importing.')
@@ -218,15 +300,30 @@ function ColumnMapper({ headers, rawData, mapping, onMappingChange, allLeads, on
     <div>
       <div className="flex items-center gap-2 mb-4">
         <button onClick={onBack} className="text-sm text-gray-400 hover:text-gray-600">← Back</button>
-        <h3 className="font-semibold text-gray-800">Map Columns</h3>
+        <h3 className="font-semibold text-gray-800">
+          {isConfidentMapping && !showManualMapping ? '✅ Review Leads' : 'Map Columns'}
+        </h3>
         <span className="text-xs text-gray-400">{rawData.length} rows detected</span>
       </div>
 
-      <p className="text-xs text-gray-500 mb-3">
-        Match your file's columns to EVIT fields. Auto-detected where possible — adjust if needed.
-      </p>
+      {isConfidentMapping && !showManualMapping ? (
+        <div className="mb-3 p-2 bg-green-50 border border-green-200 rounded text-xs text-green-700">
+          ✅ Columns auto-detected successfully.
+          <button
+            onClick={() => setShowManualMapping(true)}
+            className="ml-2 underline font-semibold hover:text-green-900"
+          >
+            Adjust manually if needed.
+          </button>
+        </div>
+      ) : (
+        <p className="text-xs text-gray-500 mb-3">
+          Match your file's columns to EVIT fields. Auto-detected where possible — adjust if needed.
+        </p>
+      )}
 
-      {/* Mapping grid */}
+      {/* Mapping grid - hidden if confident */}
+      {showManualMapping && (
       <div className="grid grid-cols-2 gap-x-4 gap-y-2 mb-5 max-h-52 overflow-y-auto pr-1">
         {EVIT_FIELDS.map(field => (
           <div key={field.key} className="flex items-center gap-2">
@@ -244,6 +341,7 @@ function ColumnMapper({ headers, rawData, mapping, onMappingChange, allLeads, on
           </div>
         ))}
       </div>
+      )}
 
       {/* Preview table */}
       {preview.length > 0 && mappedFields.length > 0 && (
@@ -371,7 +469,7 @@ export default function ImportModal({ allLeads, onImport, onClose }) {
       if (err) { setParseError(err); return }
       setParsed(data)
       setHeaders(hdrs)
-      setMapping(autoMap(hdrs))
+      setMapping(autoMap(hdrs, data))
       setStep('map')
     })
   }
@@ -385,7 +483,7 @@ export default function ImportModal({ allLeads, onImport, onClose }) {
     }
     setParsed(data)
     setHeaders(hdrs)
-    setMapping(autoMap(hdrs))
+    setMapping(autoMap(hdrs, data))
     setStep('map')
   }
 

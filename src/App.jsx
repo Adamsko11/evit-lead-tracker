@@ -174,6 +174,14 @@ export default function App() {
     await fetchLeads()
   }
 
+  async function changeLeadStatus(id, status) {
+    try {
+      await updateLead(id, { status })
+    } catch (err) {
+      alert(`Error updating status: ${err.message}`)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* ── Header ── */}
@@ -261,6 +269,7 @@ export default function App() {
               loading={loading}
               selectedId={selectedLead?.id}
               onSelect={setSelectedLead}
+              onStatusChange={changeLeadStatus}
             />
           </div>
 

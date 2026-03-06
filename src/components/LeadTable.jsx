@@ -19,7 +19,7 @@ function DupBadge({ dup }) {
   )
 }
 
-export default function LeadTable({ leads, loading, selectedId, onSelect }) {
+export default function LeadTable({ leads, loading, selectedId, onSelect, onStatusChange }) {
   if (loading) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 p-16 text-center">
@@ -51,6 +51,7 @@ export default function LeadTable({ leads, loading, selectedId, onSelect }) {
             <th className="text-left px-3 py-3 text-gray-400 font-medium text-xs uppercase tracking-wide">Location</th>
             <th className="text-left px-3 py-3 text-gray-400 font-medium text-xs uppercase tracking-wide">Status</th>
             <th className="text-left px-3 py-3 text-gray-400 font-medium text-xs uppercase tracking-wide">By</th>
+            <th className="text-center px-3 py-3 text-gray-400 font-medium text-xs uppercase tracking-wide">Action</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
@@ -99,6 +100,22 @@ export default function LeadTable({ leads, loading, selectedId, onSelect }) {
                 <StatusBadge status={lead.status || 'New'} />
               </td>
               <td className="px-3 py-3 text-gray-400 text-xs">{lead.added_by || '—'}</td>
+              <td className="px-3 py-3 text-center">
+                {lead.status !== 'Done' && onStatusChange ? (
+                  <button
+                    onClick={e => {
+                      e.stopPropagation()
+                      onStatusChange(lead.id, 'Done')
+                    }}
+                    className="px-2 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded hover:bg-green-200 transition-colors"
+                    title="Mark as Done"
+                  >
+                    ✓ Done
+                  </button>
+                ) : (
+                  <span className="text-xs text-gray-400">—</span>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
