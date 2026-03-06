@@ -282,10 +282,6 @@ function ColumnMapper({ headers, rawData, mapping, onMappingChange, allLeads, on
   const [showManualMapping, setShowManualMapping] = useState(!isConfidentMapping)
 
   async function doImport() {
-    if (hasValidationErrors) {
-      setImportError('Please fix the data validation errors above before importing.')
-      return
-    }
     setImporting(true)
     setImportError(null)
     try {
@@ -421,14 +417,11 @@ function ColumnMapper({ headers, rawData, mapping, onMappingChange, allLeads, on
 
       <button
         onClick={doImport}
-        disabled={importing || newLeads.length === 0 || hasValidationErrors}
+        disabled={importing || newLeads.length === 0}
         className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        title={hasValidationErrors ? 'Fix validation errors before importing' : ''}
       >
         {importing
           ? 'Importing...'
-          : hasValidationErrors
-          ? `⚠️ Fix ${validationErrors.length} validation error${validationErrors.length !== 1 ? 's' : ''}`
           : `Import ${newLeads.length} lead${newLeads.length !== 1 ? 's' : ''}${hardDups.length > 0 ? ` · skip ${hardDups.length} dup${hardDups.length !== 1 ? 's' : ''}` : ''}`
         }
       </button>

@@ -165,7 +165,18 @@ export default function App() {
   }
 
   async function importLeads(leadsData) {
-    const rows = leadsData.map(l => ({ ...l, added_by: currentUser }))
+    // Clean ALL data before sending to Supabase
+    const rows = leadsData.map(l => {
+      const clean = { ...l, added_by: currentUser }
+      // headcount MUST be integer or null — auto-fix silently
+      if (clean.headcount !== undefined && clean.headcount !== null && clean.headcount !== '') {
+        const num = parseInt(String(clean.headcount).replace(/[^0-9]/g, ''), 10)
+        clean.headcount = isNaN(num) ? null : num
+      } else {
+        clean.headcount = null
+      }
+      return clean
+    })
     // Batch insert in chunks of 500
     for (let i = 0; i < rows.length; i += 500) {
       const { error } = await supabase.from('leads').insert(rows.slice(i, i + 500))
