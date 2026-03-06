@@ -29,10 +29,46 @@ const AUTO_MAP_HINTS = {
   location:          ['location','country','region','city','geography','country/region','market','hq','headquarters'],
 }
 
+// ─── Fuzzy matching (simple Levenshtein distance) ──────────────────────────
+function levenshteinDistance(str1, str2) {
+  const len1 = str1.length, len2 = str2.length
+  const matrix = Array.from({ length: len1 + 1 }, () => Array(len2 + 1).fill(0))
+  for (let i = 0; i <= len1; i++) matrix[i][0] = i
+  for (let j = 0; j <= len2; j++) matrix[0][j] = j
+  for (let i = 1; i <= len1; i++) {
+    for (let j = 1; j <= len2; j++) {
+      const cost = str1[i - 1] === str2[j - 1] ? 0 : 1
+      matrix[i][j] = Math.min(matrix[i][j - 1] + 1, matrix[i][j] + 1, matrix[i - 1][j - 1] + cost)
+    }
+  }
+  return matrix[len1][len2]
+}
+
+function isSimilarEnough(headerNorm, hintNorm) {
+  // Exact match
+  if (headerNorm === hintNorm) return true
+  // High similarity (2 char or less edit distance)
+  if (levenshteinDistance(headerNorm, hintNorm) <= 2) return true
+  // Substring match
+  if (headerNorm.includes(hintNorm) || hintNorm.includes(headerNorm)) return true
+  return false
+}
+
 function autoMap(headers) {
   const mapping = {}
   for (const [fieldKey, hints] of Object.entries(AUTO_MAP_HINTS)) {
-    const match = headers.find(h => hints.includes(h.toLowerCase().trim()))
+    // First try exact match
+    let match = headers.find(h => hints.includes(h.toLowerCase().trim()))
+    // If no exact match, try fuzzy match
+    if (!match) {
+      for (const header of headers) {
+        const headerNorm = header.toLowerCase().trim()
+        if (hints.some(hint => isSimilarEnough(headerNorm, hint))) {
+          match = header
+          break
+        }
+      }
+    }
     if (match) mapping[fieldKey] = match
   }
   return mapping
@@ -65,6 +101,42 @@ function parseFile(file, callback) {
   } else {
     callback('Unsupported file type. Please use CSV, XLSX, or XLS.')
   }
+}
+
+// ─── Data validation & transformation ─────────────────────────────────────
+function validateAndTransformLeads(rawLeads, mapping) {
+  const errors = []
+  const transformed = rawLeads.map((row, idx) => {
+    const lead = {}
+    let rowErrors = []
+
+    for (const field of EVIT_FIELDS) {
+      if (mapping[field.key] && row[mapping[field.key]] !== undefined) {
+        let value = String(row[mapping[field.key]] || '').trim()
+
+        // Type coercion for headcount
+        if (field.key === 'headcount' && value) {
+          const num = parseInt(value, 10)
+          if (isNaN(num)) {
+            rowErrors.push(`"${field.label}" must be a number (got "${value}")`)
+            lead[field.key] = null
+          } else {
+            lead[field.key] = value  // Store as-is; Supabase will handle the conversion
+          }
+        } else {
+          lead[field.key] = value
+        }
+      }
+    }
+
+    if (rowErrors.length > 0) {
+      errors.push({ rowNum: idx + 2, errors: rowErrors })  // +2 because row 1 is header
+    }
+
+    return { lead, hasError: rowErrors.length > 0 }
+  })
+
+  return { leads: transformed.map(t => t.lead), errors }
 }
 
 // ─── Paste parsing (Google Sheets = TSV) ──────────────────────────────────
@@ -111,17 +183,27 @@ function ColumnMapper({ headers, rawData, mapping, onMappingChange, allLeads, on
     })
     .filter(l => Object.values(l).some(v => v)) // drop empty rows
 
-  const newLeads = allMapped.filter(l => !checkDuplicate(l, allLeads))
-  const hardDups = allMapped.filter(l => checkDuplicate(l, allLeads)?.type === 'hard')
+  // Validate and transform data
+  const { leads: validatedLeads, errors: validationErrors } = validateAndTransformLeads(allMapped, mapping)
+
+  const newLeads = validatedLeads.filter(l => !checkDuplicate(l, allLeads))
+  const hardDups = validatedLeads.filter(l => checkDuplicate(l, allLeads)?.type === 'hard')
 
   // Preview first 5 rows with dup info
-  const preview = allMapped.slice(0, 5).map(l => ({
+  const preview = validatedLeads.slice(0, 5).map(l => ({
     ...l,
     _dup: checkDuplicate(l, allLeads),
   }))
   const mappedFields = EVIT_FIELDS.filter(f => mapping[f.key])
 
+  // Check if any rows have validation errors
+  const hasValidationErrors = validationErrors.length > 0
+
   async function doImport() {
+    if (hasValidationErrors) {
+      setImportError('Please fix the data validation errors above before importing.')
+      return
+    }
     setImporting(true)
     setImportError(null)
     try {
@@ -203,6 +285,23 @@ function ColumnMapper({ headers, rawData, mapping, onMappingChange, allLeads, on
         </div>
       )}
 
+      {/* Validation Errors */}
+      {hasValidationErrors && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+          <div className="text-sm font-semibold text-red-700 mb-2">⚠️ Data Validation Issues Found</div>
+          <div className="space-y-1 text-xs text-red-600 max-h-32 overflow-y-auto">
+            {validationErrors.slice(0, 10).map((err, i) => (
+              <div key={i} className="font-mono bg-white px-2 py-1 rounded border border-red-100">
+                <span className="font-semibold">Row {err.rowNum}:</span> {err.errors.join(', ')}
+              </div>
+            ))}
+            {validationErrors.length > 10 && (
+              <div className="text-red-500 font-medium">... and {validationErrors.length - 10} more rows with issues</div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Stats */}
       <div className="bg-gray-50 rounded-lg p-3 mb-4 space-y-1 text-sm">
         <div className="flex justify-between"><span className="text-gray-500">Total rows in file:</span><span className="font-medium">{rawData.length}</span></div>
@@ -224,11 +323,14 @@ function ColumnMapper({ headers, rawData, mapping, onMappingChange, allLeads, on
 
       <button
         onClick={doImport}
-        disabled={importing || newLeads.length === 0}
-        className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
+        disabled={importing || newLeads.length === 0 || hasValidationErrors}
+        className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        title={hasValidationErrors ? 'Fix validation errors before importing' : ''}
       >
         {importing
           ? 'Importing...'
+          : hasValidationErrors
+          ? `⚠️ Fix ${validationErrors.length} validation error${validationErrors.length !== 1 ? 's' : ''}`
           : `Import ${newLeads.length} lead${newLeads.length !== 1 ? 's' : ''}${hardDups.length > 0 ? ` · skip ${hardDups.length} dup${hardDups.length !== 1 ? 's' : ''}` : ''}`
         }
       </button>
